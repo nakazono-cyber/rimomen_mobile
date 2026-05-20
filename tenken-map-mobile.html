@@ -114,6 +114,9 @@ html,body{height:100%;font-family:var(--sans);background:var(--bg);color:var(--t
 .btn-full{width:100%;padding:14px;border-radius:12px;font-size:14px;font-weight:700;font-family:var(--sans);cursor:pointer;-webkit-appearance:none;}
 .btn-full.primary{background:var(--accent);color:#fff;border:none;}
 .btn-full.secondary{background:transparent;border:1.5px solid var(--border);color:var(--text-muted);}
+.token-modal{background:var(--surface);border-radius:20px 20px 0 0;padding:24px 20px calc(var(--safe-bottom)+24px);width:100%);}
+.token-input{width:100%;padding:10px 12px;border:1.5px solid var(--border);border-radius:10px;font-size:12px;font-family:var(--mono);color:var(--text);background:var(--bg);outline:none;margin-bottom:10px;word-break:break-all;}
+.token-input:focus{border-color:var(--accent);}
 
 .sp-modal{background:var(--surface);border-radius:20px 20px 0 0;padding:20px 20px calc(var(--safe-bottom)+20px);width:100%;max-height:90vh;overflow-y:auto;}
 .sp-input{width:100%;padding:10px 12px;border:1.5px solid var(--border);border-radius:10px;font-size:13px;font-family:var(--sans);color:var(--text);background:var(--bg);outline:none;margin-bottom:10px;}
@@ -131,7 +134,10 @@ html,body{height:100%;font-family:var(--sans);background:var(--bg);color:var(--t
       <div class="logo-icon">🚉</div>
       <div><div class="logo-title">点検判断ツール</div><div class="logo-sub">GATE INSPECTION MAP</div></div>
     </div>
-    <button class="btn-csv" onclick="openModal()">📂 CSV読込</button>
+    <div style="display:flex;gap:6px;">
+      <button class="btn-csv" onclick="openModal()">📂 CSV読込</button>
+      <button class="btn-csv" onclick="openTokenModal()" style="background:#6d28d9;padding:8px 10px;">🔑</button>
+    </div>
   </div>
   <div class="stats-row">
     <div class="stat-pill danger"><div class="stat-dot"></div><span id="countDanger">0</span><span class="stat-label">要点検駅</span></div>
@@ -521,6 +527,22 @@ html,body{height:100%;font-family:var(--sans);background:var(--bg);color:var(--t
   <div class="sheet-body" id="sheetBody"></div>
 </div>
 
+<!-- トークン設定モーダル -->
+<div class="modal-overlay" id="tokenModalOverlay">
+  <div class="modal">
+    <h2>🔑 GitHub トークン設定</h2>
+    <p style="font-size:12px;color:var(--text-muted);margin-bottom:14px;line-height:1.7;">
+      CSVをGitHubに自動保存するためのPersonal Access Tokenを入力してください。<br>
+      <span style="color:var(--danger)">※ このデバイスのみに保存されます</span>
+    </p>
+    <input class="token-input" id="tokenInput" type="password" placeholder="github_pat_..." />
+    <div style="display:flex;flex-direction:column;gap:8px;">
+      <button class="btn-full primary" onclick="saveToken()">💾 保存</button>
+      <button class="btn-full secondary" onclick="closeTokenModal()">キャンセル</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="modalOverlay">
   <div class="modal">
     <h2>📂 CSVを読み込む</h2>
@@ -717,71 +739,57 @@ const SAMPLE=`機器状態,管区,駅,コーナ,品名,機種,号機,要点検�
 let stations={}, currentFilter='all';
 let scale=1,panX=0,panY=0,isPanning=false,lastTouch=null,lastDist=null,startPos={},startPan={};
 
+const GITHUB_RAW = 'https://raw.githubusercontent.com/nakazono-cyber/rimomen_mobile/main';
+
 window.addEventListener('load',()=>{
-  // 前回のCSVデータを復元（当日のみ）
+  initLayout(); fitMap(); setupInteraction();
+  window.addEventListener('resize',()=>{initLayout();fitMap();});
+
+  const today = new Date().toLocaleDateString('ja-JP');
+
+  // 当日のCSVがlocalStorageに保存済みなら即復元
   try{
     const saved = localStorage.getItem('csvData');
     const savedDate = localStorage.getItem('csvDate');
-    const today = new Date().toLocaleDateString('ja-JP');
     if(saved && saved.trim().length > 10 && savedDate === today){
-      // 当日のデータなら復元
       const sub = document.querySelector('.logo-sub');
       if(sub) sub.textContent = `読込済: ${today}`;
-      setTimeout(()=>loadData(saved), 500);
+      loadData(saved);
       return;
     } else {
-      // 古いデータはクリア
       localStorage.removeItem('csvData');
       localStorage.removeItem('csvDate');
     }
   }catch(e){}
-  // Power Automateによって埋め込まれたCSVデータを自動読み込み
-  const csvStart = SAMPLE.indexOf('__CSV_DATA_START__\n');
-  const csvEnd = SAMPLE.indexOf('\n__CSV_DATA_END__');
-  if(csvStart === -1 || csvEnd === -1 || csvEnd <= csvStart + 20){
-    // データ未埋め込み→サンプルデータを使用
-  } else {
-    const embeddedCsv = SAMPLE.slice(csvStart + '__CSV_DATA_START__\n'.length, csvEnd);
-    if(embeddedCsv.trim().length > 10){
-      // Power Automateが埋め込んだ実データを使用
-      setTimeout(()=>loadData(embeddedCsv), 500);
-    }
-  }
-  // 保存済みSPフォルダURLがあれば自動取得
-  try{
-    const saved = localStorage.getItem('spFolderUrl') || 'https://nesg-my.sharepoint.com/:f:/g/personal/yuuya_nakazono_open-nes_co_jp/IgAT7m2jCLf2SLzvrpbrKSRaARgZzyeg08TsrqIu09O_Elc?e=N6H73Y';
-    document.getElementById('spFolderUrl').value = saved;
-    if(saved){
-      // 1秒後に自動取得（地図初期化後）
-      setTimeout(async()=>{
-        const today = getTodayStr();
-        const fileName = `${today}_アプリ用点検データ.csv`;
-        try{
-          const encodedUrl = btoa(saved)
-            .replace(/=/g,'').replace(/\+/g,'-').replace(/\//g,'_');
-          const sharesApi = `https://graph.microsoft.com/v1.0/shares/u!${encodedUrl}/driveItem/children`;
-          const listResp = await fetch(sharesApi, {
-            credentials:'include',
-            headers:{'Accept':'application/json'}
-          });
-          if(listResp.ok){
-            const data = await listResp.json();
-            const target = (data.value||[]).find(f=>f.name===fileName);
-            if(target){
-              const csvResp = await fetch(target['@microsoft.graph.downloadUrl']);
-              if(csvResp.ok){
-                const text = await csvResp.text();
-                if(text && text.trim().length>10){ loadData(text); return; }
-              }
-            }
-          }
-        }catch(e){ console.log('自動取得スキップ:', e.message); }
-      }, 1000);
-    }
-  }catch(e){}
-  initLayout(); fitMap(); loadData(SAMPLE); setupInteraction();
-  window.addEventListener('resize',()=>{initLayout();fitMap();});
+
+  // GitHubから当日のCSVを自動取得
+  fetchGitHubCsv();
 });
+
+async function fetchGitHubCsv(){
+  const today = getTodayStr();
+  const fileName = `${today}_アプリ用点検データ.csv`;
+  const url = `${GITHUB_RAW}/${fileName}`;
+
+  const sub = document.querySelector('.logo-sub');
+  if(sub) sub.textContent = '📥 データ取得中...';
+
+  try{
+    const resp = await fetch(url, {cache:'no-store'});
+    if(resp.ok){
+      const text = await resp.text();
+      if(text && text.trim().length > 10){
+        loadData(text);
+        return;
+      }
+    }
+    // 取得失敗→空の状態で起動
+    if(sub) sub.textContent = 'GATE INSPECTION MAP';
+  }catch(e){
+    console.log('GitHub取得失敗:', e.message);
+    if(sub) sub.textContent = 'GATE INSPECTION MAP';
+  }
+}
 
 function initLayout(){
   const hh=document.getElementById('appHeader').offsetHeight;
@@ -946,7 +954,13 @@ function loadData(csv){
   const r=Papa.parse(csv,{header:true,skipEmptyLines:true,transformHeader:h=>h.trim().replace(/^"|"$/g,'').replace(/^\uFEFF/,'')});
   stations=buildStations(r.data);
   updateStats();updateMarkers();renderList();closeModal();
-
+  // localStorageに保存（当日分として）
+  try{
+    localStorage.setItem('csvData', csv);
+    localStorage.setItem('csvDate', new Date().toLocaleDateString('ja-JP'));
+    const sub = document.querySelector('.logo-sub');
+    if(sub) sub.textContent = `読込済: ${new Date().toLocaleDateString('ja-JP')}`;
+  }catch(e){}
 }
 function updateStats(){
   const v=Object.values(stations);
@@ -1027,7 +1041,83 @@ function handleFile(file){
   document.getElementById('dropText').textContent=`📄 ${file.name}`;
   const r=new FileReader();r.onload=e=>loadData(e.target.result);r.readAsText(file,'UTF-8');
 }
-function openModal(){document.getElementById('modalOverlay').classList.add('open');}
+function getTodayStr(){
+  const d=new Date();
+  return `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`;
+}
+// ── GitHub API設定 ──
+const GITHUB_REPO = 'nakazono-cyber/rimomen_mobile';
+const GITHUB_API = 'https://api.github.com';
+function getToken(){ return localStorage.getItem('githubToken')||''; }
+
+// CSVをGitHubにアップロード
+async function uploadCsvToGitHub(csvText){
+  const today = getTodayStr();
+  const fileName = `${today}_アプリ用点検データ.csv`;
+  const path = fileName;
+
+  // 既存ファイルのSHAを取得（上書きに必要）
+  let sha = null;
+  try{
+    const checkResp = await fetch(`${GITHUB_API}/repos/${GITHUB_REPO}/contents/${path}`,{
+      headers:{
+        'Authorization': `Bearer ${getToken()}`,
+        'Accept': 'application/vnd.github+json'
+      }
+    });
+    if(checkResp.ok){
+      const data = await checkResp.json();
+      sha = data.sha;
+    }
+  }catch(e){}
+
+  // Base64エンコード
+  const encoded = btoa(unescape(encodeURIComponent(csvText)));
+
+  // アップロード
+  const body = {
+    message: `${today} 点検データ更新`,
+    content: encoded,
+    ...(sha ? {sha} : {})
+  };
+
+  const resp = await fetch(`${GITHUB_API}/repos/${GITHUB_REPO}/contents/${path}`,{
+    method: 'PUT',
+    headers:{
+      'Authorization': `Bearer ${getToken()}`,
+      'Accept': 'application/vnd.github+json',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(body)
+  });
+
+  return resp.ok;
+}
+
+function openModal(){
+  // トークン未設定なら先に設定を促す
+  if(!getToken()){
+    openTokenModal();
+    return;
+  }
+  document.getElementById('modalOverlay').classList.add('open');
+}
+function openTokenModal(){
+  const saved = getToken();
+  if(saved) document.getElementById('tokenInput').value = saved;
+  document.getElementById('tokenModalOverlay').classList.add('open');
+}
+function closeTokenModal(){
+  document.getElementById('tokenModalOverlay').classList.remove('open');
+}
+function saveToken(){
+  const token = document.getElementById('tokenInput').value.trim();
+  if(!token){ alert('トークンを入力してください'); return; }
+  localStorage.setItem('githubToken', token);
+  closeTokenModal();
+  // トークン設定後にCSV読込モーダルを開く
+  document.getElementById('modalOverlay').classList.add('open');
+}
 function closeModal(){document.getElementById('modalOverlay').classList.remove('open');}
 </script>
 </body>
