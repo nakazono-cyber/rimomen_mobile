@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <meta name="apple-mobile-web-app-capable" content="yes">
+
 <title>点検判断ツール</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
 <style>
@@ -130,16 +131,14 @@ html,body{height:100%;font-family:var(--sans);background:var(--bg);color:var(--t
       <div class="logo-icon">🚉</div>
       <div><div class="logo-title">点検判断ツール</div><div class="logo-sub">GATE INSPECTION MAP</div></div>
     </div>
-    <div style="display:flex;gap:6px">
-      <button class="btn-csv" onclick="openSharePointModal()" style="background:#0078d4">☁️ OD</button>
-      <button class="btn-csv" onclick="openModal()">📂 手動</button>
-    </div>
+    <button class="btn-csv" onclick="openModal()">📂 CSV読込</button>
   </div>
   <div class="stats-row">
     <div class="stat-pill danger"><div class="stat-dot"></div><span id="countDanger">0</span><span class="stat-label">要点検駅</span></div>
     <div class="stat-pill warn"><div class="stat-dot"></div><span id="countWarn">0</span><span class="stat-label">点検予告駅</span></div>
   </div>
 </div>
+
 
 <div class="screen active" id="screen-map">
   <div class="map-viewport" id="mapViewport">
@@ -522,43 +521,15 @@ html,body{height:100%;font-family:var(--sans);background:var(--bg);color:var(--t
   <div class="sheet-body" id="sheetBody"></div>
 </div>
 
-<!-- SharePoint自動取得モーダル -->
-<div class="modal-overlay" id="spModalOverlay">
-  <div class="sp-modal">
-    <h2 style="margin-bottom:6px">☁️ OneDriveから自動取得</h2>
-    <p style="font-size:12px;color:var(--text-muted);margin-bottom:14px;line-height:1.7">
-      OneDriveのCSVフォルダURLを入力してください。<br>
-      当日（<span id="todayStr"></span>）のCSVを自動で読み込みます。<br>
-      <span style="color:var(--accent)">https://nesg-my.sharepoint.com/:f:/g/personal/yuuya_nakazono_open-nes_co_jp/IgAT7m2jCLf2SLzvrpbrKSRaARgZzyeg08TsrqIu09O_Elc?e=N6H73Y</span>
-    </p>
-    <input class="sp-input" id="spFolderUrl" type="url"
-      placeholder="SharePointフォルダのURLを貼り付け"
-      value="https://nesg-my.sharepoint.com/:f:/g/personal/yuuya_nakazono_open-nes_co_jp/IgAT7m2jCLf2SLzvrpbrKSRaARgZzyeg08TsrqIu09O_Elc?e=N6H73Y">
-    <div style="font-size:11px;color:var(--text-muted);margin-bottom:12px;line-height:1.6">
-      💡 SharePointを開いて、CSVが入っているフォルダのURLをそのままコピーして貼り付けてください
-    </div>
-    <div class="sp-status" id="spStatus"></div>
-    <div style="display:flex;flex-direction:column;gap:8px">
-      <button class="btn-full primary" onclick="fetchFromSharePoint()" style="background:#107c41">
-        ☁️ 今日のCSVを取得
-      </button>
-      <button class="btn-full secondary" onclick="closeSpModal()">キャンセル</button>
-    </div>
-  </div>
-</div>
-
 <div class="modal-overlay" id="modalOverlay">
   <div class="modal">
     <h2>📂 CSVを読み込む</h2>
-    <p>SharePointからダウンロードしたCSVを選択してください。</p>
-    <div class="col-format">機器状態 / 管区 / 駅 / コーナ<br>品名 / 機種 / 号機 / 要点検理由 / 最終点検日</div>
     <div class="drop-zone" onclick="document.getElementById('fileInput').click()">
       <div class="drop-zone-icon">📄</div>
       <div class="drop-zone-text" id="dropText">タップしてCSVを選択</div>
     </div>
     <input type="file" id="fileInput" accept=".csv" style="display:none" onchange="handleFile(this.files[0])">
     <div class="modal-actions">
-      <button class="btn-full primary"   onclick="loadSample()">📊 サンプルデータで試す</button>
       <button class="btn-full secondary" onclick="closeModal()">キャンセル</button>
     </div>
   </div>
@@ -747,6 +718,35 @@ let stations={}, currentFilter='all';
 let scale=1,panX=0,panY=0,isPanning=false,lastTouch=null,lastDist=null,startPos={},startPan={};
 
 window.addEventListener('load',()=>{
+  // 前回のCSVデータを復元（当日のみ）
+  try{
+    const saved = localStorage.getItem('csvData');
+    const savedDate = localStorage.getItem('csvDate');
+    const today = new Date().toLocaleDateString('ja-JP');
+    if(saved && saved.trim().length > 10 && savedDate === today){
+      // 当日のデータなら復元
+      const sub = document.querySelector('.logo-sub');
+      if(sub) sub.textContent = `読込済: ${today}`;
+      setTimeout(()=>loadData(saved), 500);
+      return;
+    } else {
+      // 古いデータはクリア
+      localStorage.removeItem('csvData');
+      localStorage.removeItem('csvDate');
+    }
+  }catch(e){}
+  // Power Automateによって埋め込まれたCSVデータを自動読み込み
+  const csvStart = SAMPLE.indexOf('__CSV_DATA_START__\n');
+  const csvEnd = SAMPLE.indexOf('\n__CSV_DATA_END__');
+  if(csvStart === -1 || csvEnd === -1 || csvEnd <= csvStart + 20){
+    // データ未埋め込み→サンプルデータを使用
+  } else {
+    const embeddedCsv = SAMPLE.slice(csvStart + '__CSV_DATA_START__\n'.length, csvEnd);
+    if(embeddedCsv.trim().length > 10){
+      // Power Automateが埋め込んだ実データを使用
+      setTimeout(()=>loadData(embeddedCsv), 500);
+    }
+  }
   // 保存済みSPフォルダURLがあれば自動取得
   try{
     const saved = localStorage.getItem('spFolderUrl') || 'https://nesg-my.sharepoint.com/:f:/g/personal/yuuya_nakazono_open-nes_co_jp/IgAT7m2jCLf2SLzvrpbrKSRaARgZzyeg08TsrqIu09O_Elc?e=N6H73Y';
@@ -946,6 +946,7 @@ function loadData(csv){
   const r=Papa.parse(csv,{header:true,skipEmptyLines:true,transformHeader:h=>h.trim().replace(/^"|"$/g,'').replace(/^\uFEFF/,'')});
   stations=buildStations(r.data);
   updateStats();updateMarkers();renderList();closeModal();
+
 }
 function updateStats(){
   const v=Object.values(stations);
@@ -1026,103 +1027,6 @@ function handleFile(file){
   document.getElementById('dropText').textContent=`📄 ${file.name}`;
   const r=new FileReader();r.onload=e=>loadData(e.target.result);r.readAsText(file,'UTF-8');
 }
-function loadSample(){loadData(SAMPLE);}
-// ── SharePoint自動取得 ──
-function openSharePointModal(){
-  // 今日の日付をyyyymmdd形式で表示
-  const today = getTodayStr();
-  document.getElementById('todayStr').textContent = today;
-  // 保存済みURLを復元
-  const saved = localStorage.getItem('spFolderUrl');
-  if(saved) document.getElementById('spFolderUrl').value = saved;
-  document.getElementById('spModalOverlay').classList.add('open');
-}
-function closeSpModal(){
-  document.getElementById('spModalOverlay').classList.remove('open');
-  document.getElementById('spStatus').style.display='none';
-}
-
-function getTodayStr(){
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth()+1).padStart(2,'0');
-  const day = String(d.getDate()).padStart(2,'0');
-  return `${y}${m}${day}`;
-}
-
-async function fetchFromSharePoint(){
-  const folderUrl = document.getElementById('spFolderUrl').value.trim();
-  if(!folderUrl){ showSpStatus('error','URLを入力してください'); return; }
-  try{ localStorage.setItem('spFolderUrl', folderUrl); }catch(e){}
-
-  const today = getTodayStr();
-  const fileName = `${today}_アプリ用点検データ.csv`;
-  showSpStatus('loading', `📥 ${fileName} を取得中...`);
-
-  try {
-    // OneDrive共有リンクからGraph APIでファイル一覧取得
-    // /:f:/ 形式の共有リンクをGraph APIのshares経由で解決
-    const encodedUrl = btoa(folderUrl)
-      .replace(/=/g,'').replace(/\+/g,'-').replace(/\//g,'_');
-    const sharesApi = `https://graph.microsoft.com/v1.0/shares/u!${encodedUrl}/driveItem/children`;
-
-    const listResp = await fetch(sharesApi, {
-      credentials: 'include',
-      headers: { 'Accept': 'application/json' }
-    });
-
-    if(!listResp.ok){
-      if(listResp.status === 401){
-        showSpStatus('error','🔐 認証エラー。Microsoftアカウントでログイン中か確認してください');
-      } else {
-        showSpStatus('error', `❌ フォルダ取得失敗 (${listResp.status})`);
-      }
-      return;
-    }
-
-    const listData = await listResp.json();
-    const files = listData.value || [];
-
-    // 当日のCSVを探す
-    const target = files.find(f => f.name === fileName);
-    if(!target){
-      showSpStatus('error',
-        `❌ ${fileName} が見つかりません<br>` +
-        `<small>フォルダ内のファイル: ${files.map(f=>f.name).join(', ')||'なし'}</small>`
-      );
-      return;
-    }
-
-    // ダウンロードURLで取得
-    const downloadUrl = target['@microsoft.graph.downloadUrl'];
-    const csvResp = await fetch(downloadUrl);
-    if(!csvResp.ok){
-      showSpStatus('error', `❌ CSV取得失敗 (${csvResp.status})`);
-      return;
-    }
-
-    const text = await csvResp.text();
-    if(!text || text.trim().length < 10){
-      showSpStatus('error','❌ CSVが空です');
-      return;
-    }
-
-    showSpStatus('success', `✅ ${fileName} を読み込みました！`);
-    setTimeout(()=>{ loadData(text); closeSpModal(); }, 600);
-
-  } catch(e) {
-    console.error('fetch error:', e);
-    showSpStatus('error', `⚠️ 取得できませんでした<br><small>${e.message}</small>`);
-  }
-}
-
-function showSpStatus(type, msg){
-  const el = document.getElementById('spStatus');
-  el.className = `sp-status ${type}`;
-  el.innerHTML = msg;
-  el.style.display = 'block';
-}
-
 function openModal(){document.getElementById('modalOverlay').classList.add('open');}
 function closeModal(){document.getElementById('modalOverlay').classList.remove('open');}
 </script>
