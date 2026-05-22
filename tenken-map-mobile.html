@@ -768,7 +768,7 @@ window.addEventListener('load',()=>{
 
 async function fetchGitHubCsv(){
   const today = getTodayStr();
-  const fileName = `${today}_アプリ用点検データ.csv`;
+  const fileName = `${today}_rimomen_mobile.csv`;
   const url = `${GITHUB_RAW}/${fileName}`;
 
   const sub = document.querySelector('.logo-sub');
@@ -1053,7 +1053,7 @@ function getToken(){ return localStorage.getItem('githubToken')||''; }
 // CSVをGitHubにアップロード
 async function uploadCsvToGitHub(csvText){
   const today = getTodayStr();
-  const fileName = `${today}_アプリ用点検データ.csv`;
+  const fileName = `${today}_rimomen_mobile.csv`;
   const path = fileName;
 
   // 既存ファイルのSHAを取得（上書きに必要）
