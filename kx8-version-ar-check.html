@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>KX8 バージョン照合パネル</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.0.4/tesseract.min.js"></script>
+<style>
+  :root{
+    --bg: #0c0f0a;
+    --panel: #12160f;
+    --panel-line: #2a3320;
+    --amber: #e8a33d;
+    --amber-dim: #8a6524;
+    --green: #6fbf5c;
+    --green-dim: #35521f;
+    --red: #c75c4d;
+    --gray: #5a6355;
+    --text: #d8e0c8;
+    --text-dim: #7f8a72;
+    --mono: 'Courier New', ui-monospace, 'SF Mono', Menlo, monospace;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family: var(--mono);
+    -webkit-tap-highlight-color: transparent;
+    display:flex; justify-content:center;
+  }
+  #app{
+    width:100%; max-width:480px; min-height:100vh;
+    background:var(--bg); position:relative;
+    border-left:1px solid var(--panel-line); border-right:1px solid var(--panel-line);
+  }
+  @media (min-width:900px){
+    #app{max-width:960px;}
+    #view-check.active{
+      display:grid;
+      grid-template-columns:420px 1fr;
+      gap:20px;
+      align-items:start;
+    }
+    #view-check .cam-column{position:sticky; top:14px;}
+    #view-check .list-column{min-width:0;}
+    .cam-wrap{aspect-ratio:4/3;}
+  }
+  .scanlines{
+    position:fixed; inset:0; pointer-events:none; z-index:50;
+    background: repeating-linear-gradient(0deg, rgba(0,0,0,0.12) 0px, rgba(0,0,0,0.12) 1px, transparent 1px, transparent 3px);
+    mix-blend-mode: overlay; opacity:0.5;
+  }
+  header{
+    padding:14px 16px 10px; border-bottom:1px solid var(--panel-line);
+    display:flex; align-items:baseline; justify-content:space-between;
+  }
+  header h1{
+    font-size:15px; letter-spacing:0.12em; margin:0; color:var(--amber);
+    font-weight:700; text-transform:uppercase;
+  }
+  header .sub{font-size:10px; color:var(--text-dim); letter-spacing:0.08em;}
+  .tabs{display:flex; border-bottom:1px solid var(--panel-line);}
+  .tab{
+    flex:1; text-align:center; padding:11px 4px; font-size:12px; letter-spacing:0.05em;
+    color:var(--text-dim); border-bottom:2px solid transparent; cursor:pointer;
+  }
+  .tab.active{color:var(--amber); border-bottom-color:var(--amber);}
+  .view{display:none; padding:14px 14px 90px;}
+  .view.active{display:block;}
+
+  .dropzone{
+    border:1px dashed var(--panel-line); border-radius:4px; padding:28px 12px;
+    text-align:center; color:var(--text-dim); font-size:12px; line-height:1.8;
+  }
+  .dropzone.drag{border-color:var(--amber); color:var(--amber);}
+  .dropzone input{display:none;}
+  .btn{
+    display:inline-block; background:var(--panel); border:1px solid var(--panel-line);
+    color:var(--amber); font-family:var(--mono); font-size:12px; letter-spacing:0.05em;
+    padding:9px 14px; border-radius:3px; cursor:pointer;
+  }
+  .btn:active{background:var(--amber-dim);}
+  .btn.small{padding:5px 9px; font-size:11px;}
+  .btn.ghost{color:var(--text-dim);}
+  .btn.danger{color:var(--red);}
+  .status-line{
+    font-size:11px; color:var(--text-dim); margin-top:10px; min-height:14px;
+  }
+
+  table{width:100%; border-collapse:collapse; margin-top:14px; font-size:12px;}
+  th{
+    text-align:left; color:var(--text-dim); font-weight:400; font-size:10px;
+    letter-spacing:0.08em; padding:5px 4px; border-bottom:1px solid var(--panel-line);
+  }
+  td{padding:6px 4px; border-bottom:1px solid #1a2014; vertical-align:middle;}
+  td input{
+    width:100%; background:transparent; border:none; border-bottom:1px solid transparent;
+    color:var(--text); font-family:var(--mono); font-size:12px; padding:2px 0;
+  }
+  td input:focus{border-bottom-color:var(--amber); outline:none;}
+  .del-x{color:var(--gray); cursor:pointer; font-size:14px; padding:0 4px;}
+  .add-row{margin-top:10px;}
+
+  .dot{width:9px; height:9px; border-radius:50%; display:inline-block; margin-right:6px;}
+  .dot.gray{background:var(--gray);}
+  .dot.amber{background:var(--amber); box-shadow:0 0 6px var(--amber);}
+  .dot.green{background:var(--green); box-shadow:0 0 6px var(--green);}
+
+  .cam-wrap{position:relative; width:100%; aspect-ratio:3/4; background:#000; border-radius:4px; overflow:hidden; border:1px solid var(--panel-line);}
+  @media (min-width:600px){
+    .cam-wrap{aspect-ratio:4/3;}
+  }
+  video{width:100%; height:100%; object-fit:cover;}
+  .cam-frame{
+    position:absolute; inset:8%; border:1px solid rgba(232,163,61,0.5); pointer-events:none;
+  }
+  .cam-frame::before,.cam-frame::after{content:'';position:absolute;width:16px;height:16px;border:2px solid var(--amber);}
+  .cam-frame::before{top:-1px;left:-1px;border-right:none;border-bottom:none;}
+  .cam-frame::after{bottom:-1px;right:-1px;border-left:none;border-top:none;}
+  .cam-controls{display:flex; gap:8px; margin-top:10px; flex-wrap:wrap;}
+  #cameraSelect{
+    background:var(--panel); border:1px solid var(--panel-line); color:var(--text);
+    font-family:var(--mono); font-size:11px; padding:8px 6px; border-radius:3px;
+    width:100%; margin-top:8px;
+  }
+  .scan-pulse{
+    position:absolute; top:0; left:0; right:0; height:2px; background:var(--amber);
+    box-shadow:0 0 8px var(--amber); animation:scan 2.2s linear infinite; opacity:0;
+  }
+  .scanning .scan-pulse{opacity:1;}
+  @keyframes scan{0%{transform:translateY(0);}100%{transform:translateY(400px);}}
+
+  .checklist{margin-top:14px;}
+  .item{
+    background:var(--panel); border:1px solid var(--panel-line); border-radius:3px;
+    padding:9px 10px; margin-bottom:6px; display:flex; align-items:center; gap:8px;
+  }
+  .item.matched{border-color:var(--green-dim);}
+  .item.review{border-color:var(--amber-dim);}
+  .item-body{flex:1; min-width:0;}
+  .item-label{font-size:11px; color:var(--text-dim); margin-bottom:2px;}
+  .item-version{font-size:13px; letter-spacing:0.03em;}
+  .diff-hi{color:var(--amber); background:rgba(232,163,61,0.18); padding:0 1px; border-radius:2px;}
+  .item-found{font-size:10px; color:var(--text-dim); margin-top:3px;}
+  .confirm-btn{
+    font-size:10px; color:var(--amber); border:1px solid var(--amber-dim); border-radius:3px;
+    padding:4px 7px; cursor:pointer; white-space:nowrap;
+  }
+  .summary-bar{
+    display:flex; gap:14px; font-size:11px; color:var(--text-dim); margin-bottom:10px;
+    padding-bottom:8px; border-bottom:1px solid var(--panel-line);
+  }
+  .empty{color:var(--text-dim); font-size:12px; text-align:center; padding:30px 10px;}
+</style>
+</head>
+<body>
+<div id="app">
+<div class="scanlines"></div>
+
+<header>
+  <h1>KX8 VERIFY</h1>
+  <span class="sub" id="itemCount">項目 0</span>
+</header>
+
+<div class="tabs">
+  <div class="tab active" data-tab="load">① シート読込</div>
+  <div class="tab" data-tab="check">② 照合カメラ</div>
+</div>
+
+<!-- ===== TAB 1: LOAD ===== -->
+<div class="view active" id="view-load">
+  <div class="dropzone" id="dropzone">
+    チェックリストPDFをここにドラッグ&ドロップ<br>
+    <span style="font-size:10px;">またはタップしてファイルを選択</span>
+    <input type="file" id="fileInput" accept="application/pdf">
+  </div>
+  <div class="status-line" id="loadStatus"></div>
+
+  <table id="itemTable">
+    <thead>
+      <tr><th style="width:44%">項目</th><th style="width:44%">バージョン</th><th style="width:12%"></th></tr>
+    </thead>
+    <tbody id="itemTbody"></tbody>
+  </table>
+  <div class="add-row">
+    <span class="btn small ghost" id="addRowBtn">＋ 行を追加</span>
+    <span class="btn small danger" id="clearAllBtn" style="margin-left:8px;">全削除</span>
+  </div>
+</div>
+
+<!-- ===== TAB 2: CHECK ===== -->
+<div class="view" id="view-check">
+  <div class="cam-column">
+    <div class="cam-wrap" id="camWrap">
+      <video id="video" playsinline webkit-playsinline muted autoplay></video>
+      <div class="cam-frame"></div>
+      <div class="scan-pulse"></div>
+    </div>
+    <div class="cam-controls">
+      <span class="btn" id="camToggle">カメラ開始</span>
+      <span class="btn ghost" id="resetConfirm">照合リセット</span>
+    </div>
+    <select id="cameraSelect" style="display:none;"></select>
+    <div class="status-line" id="ocrStatus">待機中</div>
+  </div>
+
+  <div class="list-column">
+    <div class="summary-bar" id="summaryBar"></div>
+    <div class="checklist" id="checklist"></div>
+  </div>
+</div>
+</div>
+
+<script>
+const STORAGE_KEY = 'kx8_checklist_items_v1';
+let items = [];
+let nextId = 1;
+
+function loadItemsFromStorage(){
+  try{
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if(raw){
+      items = JSON.parse(raw);
+      nextId = items.reduce((m,i)=>Math.max(m,i.id),0)+1;
+    }
+  }catch(e){ items = []; }
+}
+function saveItems(){
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
+  document.getElementById('itemCount').textContent = '項目 ' + items.length;
+}
+
+// ---------- Tabs ----------
+document.querySelectorAll('.tab').forEach(tab=>{
+  tab.addEventListener('click', ()=>{
+    document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+    document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById('view-' + tab.dataset.tab).classList.add('active');
+    if(tab.dataset.tab === 'check') renderChecklist();
+  });
+});
+
+// ---------- PDF loading ----------
+const dropzone = document.getElementById('dropzone');
+const fileInput = document.getElementById('fileInput');
+dropzone.addEventListener('click', ()=>fileInput.click());
+dropzone.addEventListener('dragover', e=>{e.preventDefault(); dropzone.classList.add('drag');});
+dropzone.addEventListener('dragleave', ()=>dropzone.classList.remove('drag'));
+dropzone.addEventListener('drop', e=>{
+  e.preventDefault(); dropzone.classList.remove('drag');
+  if(e.dataTransfer.files.length) handlePdfFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener('change', e=>{
+  if(e.target.files.length) handlePdfFile(e.target.files[0]);
+});
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+async function handlePdfFile(file){
+  const statusEl = document.getElementById('loadStatus');
+  statusEl.textContent = 'PDFを解析中...';
+  try{
+    const buf = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({data: buf}).promise;
+    let fullText = '';
+    for(let p=1; p<=pdf.numPages; p++){
+      const page = await pdf.getPage(p);
+      const content = await page.getTextContent();
+      // group by approximate line (y position) to keep row structure
+      const lines = {};
+      content.items.forEach(it=>{
+        const y = Math.round(it.transform[5]);
+        if(!lines[y]) lines[y] = [];
+        lines[y].push(it.str);
+      });
+      const ys = Object.keys(lines).map(Number).sort((a,b)=>b-a);
+      ys.forEach(y=>{ fullText += lines[y].join(' ') + '\n'; });
+    }
+    const parsed = parseChecklist(fullText);
+    if(parsed.length === 0){
+      statusEl.textContent = '自動抽出0件。手動で行を追加してください。';
+    }else{
+      parsed.forEach(p=>{
+        items.push({id: nextId++, label: p.label, version: p.version});
+      });
+      saveItems();
+      renderTable();
+      statusEl.textContent = parsed.length + '件を自動抽出しました。内容を確認してください（誤読の可能性あり）';
+    }
+  }catch(err){
+    statusEl.textContent = '読込エラー: ' + err.message;
+  }
+}
+
+// version token pattern seen in KX8 sheets, e.g. SU7-05064-11-920 / SUA-00117-11-013
+const VERSION_RE = /\b[A-Z]{2}[0-9A-Z]?-\d{4,5}-\d{2}-[0-9A-Z]{2,3}\b/g;
+
+function parseChecklist(text){
+  const results = [];
+  const lines = text.split('\n');
+  lines.forEach(line=>{
+    const matches = line.match(VERSION_RE);
+    if(matches){
+      matches.forEach(v=>{
+        const idx = line.indexOf(v);
+        let label = line.slice(0, idx).trim();
+        // strip trailing punctuation / stray parens
+        label = label.replace(/[（(].*$/,'').trim();
+        if(!label) label = '(項目名未検出)';
+        results.push({label, version: v});
+      });
+    }
+  });
+  return results;
+}
+
+// ---------- Table rendering (tab 1) ----------
+function renderTable(){
+  const tbody = document.getElementById('itemTbody');
+  tbody.innerHTML = '';
+  items.forEach(item=>{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><input type="text" value="${escapeHtml(item.label)}" data-field="label" data-id="${item.id}"></td>
+      <td><input type="text" value="${escapeHtml(item.version)}" data-field="version" data-id="${item.id}"></td>
+      <td><span class="del-x" data-id="${item.id}">✕</span></td>
+    `;
+    tbody.appendChild(tr);
+  });
+  document.getElementById('itemCount').textContent = '項目 ' + items.length;
+}
+document.getElementById('itemTbody').addEventListener('input', e=>{
+  const id = Number(e.target.dataset.id);
+  const field = e.target.dataset.field;
+  const item = items.find(i=>i.id===id);
+  if(item){ item[field] = e.target.value; saveItems(); }
+});
+document.getElementById('itemTbody').addEventListener('click', e=>{
+  if(e.target.classList.contains('del-x')){
+    const id = Number(e.target.dataset.id);
+    items = items.filter(i=>i.id!==id);
+    saveItems(); renderTable();
+  }
+});
+document.getElementById('addRowBtn').addEventListener('click', ()=>{
+  items.push({id: nextId++, label:'', version:''});
+  saveItems(); renderTable();
+});
+document.getElementById('clearAllBtn').addEventListener('click', ()=>{
+  if(confirm('全項目を削除しますか？')){
+    items = []; saveItems(); renderTable();
+  }
+});
+
+function escapeHtml(s){
+  return (s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// ---------- Camera + OCR (tab 2) ----------
+let stream = null;
+let ocrTimer = null;
+let worker = null;
+let ocrBusy = false;
+
+const camToggle = document.getElementById('camToggle');
+camToggle.addEventListener('click', async ()=>{
+  if(stream){
+    stopCamera();
+  }else{
+    await startCamera();
+  }
+});
+
+const cameraSelect = document.getElementById('cameraSelect');
+let currentDeviceId = null;
+
+async function populateCameraList(){
+  try{
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const cams = devices.filter(d=>d.kind === 'videoinput');
+    cameraSelect.innerHTML = '';
+    cams.forEach((cam, i)=>{
+      const opt = document.createElement('option');
+      opt.value = cam.deviceId;
+      opt.textContent = cam.label || ('カメラ ' + (i+1));
+      cameraSelect.appendChild(opt);
+    });
+    cameraSelect.style.display = cams.length > 1 ? 'block' : 'none';
+    if(cams.length && !currentDeviceId){
+      currentDeviceId = cams[0].deviceId;
+    }
+    if(currentDeviceId) cameraSelect.value = currentDeviceId;
+  }catch(e){ /* enumerate may fail before permission; ignore */ }
+}
+
+cameraSelect.addEventListener('change', async ()=>{
+  currentDeviceId = cameraSelect.value;
+  if(stream){
+    // hot-swap: stop old tracks and open the newly selected camera
+    stream.getTracks().forEach(t=>t.stop());
+    await openStream();
+  }
+});
+
+async function openStream(){
+  const constraints = currentDeviceId
+    ? {video:{deviceId:{exact: currentDeviceId}, width:{ideal:1280}, height:{ideal:960}}}
+    : {video:{facingMode:'environment', width:{ideal:1280}, height:{ideal:960}}};
+  stream = await navigator.mediaDevices.getUserMedia(constraints);
+  const videoEl = document.getElementById('video');
+  videoEl.srcObject = stream;
+  try{
+    await videoEl.play();
+  }catch(playErr){
+    // some browsers need a fresh gesture-triggered play(); surface it instead of failing silently
+    document.getElementById('ocrStatus').textContent = '映像再生に失敗: ' + playErr.message + '（画面をタップしてみて）';
+  }
+}
+
+async function startCamera(){
+  const statusEl = document.getElementById('ocrStatus');
+  try{
+    await openStream();
+    await populateCameraList(); // labels are only available after permission is granted
+    document.getElementById('camWrap').classList.add('scanning');
+    camToggle.textContent = 'カメラ停止';
+    statusEl.textContent = 'OCRエンジン準備中...';
+    if(!worker){
+      worker = await Tesseract.createWorker('eng');
+    }
+    statusEl.textContent = '照合中...';
+    ocrTimer = setInterval(runOcrTick, 2500);
+  }catch(err){
+    statusEl.textContent = 'カメラ起動失敗: ' + err.message;
+  }
+}
+function stopCamera(){
+  if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
+  document.getElementById('camWrap').classList.remove('scanning');
+  camToggle.textContent = 'カメラ開始';
+  document.getElementById('ocrStatus').textContent = '停止中';
+  if(ocrTimer){ clearInterval(ocrTimer); ocrTimer=null; }
+}
+
+async function runOcrTick(){
+  if(ocrBusy) return;
+  ocrBusy = true;
+  const statusEl = document.getElementById('ocrStatus');
+  try{
+    const video = document.getElementById('video');
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const dataUrl = canvas.toDataURL('image/png');
+    const { data } = await worker.recognize(dataUrl);
+    statusEl.textContent = '照合中... (最終スキャン ' + new Date().toLocaleTimeString() + ')';
+    applyOcrResult(data.text || '');
+  }catch(err){
+    statusEl.textContent = 'OCRエラー: ' + err.message;
+  }
+  ocrBusy = false;
+}
+
+function escapeRegex(s){ return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+// build a regex that treats O<->0 and I/L<->1 as interchangeable
+function buildFuzzyPattern(version){
+  let pattern = '';
+  for(const ch of version){
+    if(ch === '0' || ch === 'O' || ch === 'o'){ pattern += '[O0]'; }
+    else if(ch === '1' || ch === 'I' || ch === 'i' || ch === 'L' || ch === 'l'){ pattern += '[IL1]'; }
+    else { pattern += escapeRegex(ch); }
+  }
+  return new RegExp(pattern, 'i');
+}
+
+function applyOcrResult(rawText){
+  const cleaned = rawText.replace(/\s+/g, ' ');
+  items.forEach(item=>{
+    if(!item.version) return;
+    if(item.confirmed) return; // already visually confirmed, don't re-evaluate
+    const re = buildFuzzyPattern(item.version);
+    const m = cleaned.match(re);
+    if(m){
+      const found = m[0];
+      item.foundText = found;
+      if(found.toUpperCase() === item.version.toUpperCase()){
+        item.status = 'matched';
+      }else{
+        item.status = 'review';
+      }
+    }
+    // if no match this tick, leave previous status as-is (don't downgrade a review back to gray)
+  });
+  renderChecklist();
+}
+
+document.getElementById('resetConfirm').addEventListener('click', ()=>{
+  items.forEach(i=>{ i.status='pending'; i.confirmed=false; i.foundText=''; });
+  saveItems(); renderChecklist();
+});
+
+function diffHighlight(stored, found){
+  // returns stored string with ambiguous-mismatch chars wrapped for highlight
+  let out = '';
+  for(let i=0;i<stored.length;i++){
+    const s = stored[i];
+    const f = found[i] || '';
+    if(s.toUpperCase() !== f.toUpperCase()){
+      out += `<span class="diff-hi">${escapeHtml(s)}</span>`;
+    }else{
+      out += escapeHtml(s);
+    }
+  }
+  return out;
+}
+
+document.getElementById('checklist').addEventListener('click', e=>{
+  if(e.target.classList.contains('confirm-btn')){
+    const id = Number(e.target.dataset.id);
+    const item = items.find(i=>i.id===id);
+    if(item){ item.status='matched'; item.confirmed=true; saveItems(); renderChecklist(); }
+  }
+});
+
+function renderChecklist(){
+  const wrap = document.getElementById('checklist');
+  const summary = document.getElementById('summaryBar');
+  if(items.length === 0){
+    wrap.innerHTML = '<div class="empty">項目がありません。「① シート読込」タブでPDFを読み込むか、行を追加してください。</div>';
+    summary.innerHTML = '';
+    return;
+  }
+  const matched = items.filter(i=>i.status==='matched').length;
+  const review = items.filter(i=>i.status==='review').length;
+  const pending = items.length - matched - review;
+  summary.innerHTML = `
+    <span><span class="dot green"></span>一致 ${matched}</span>
+    <span><span class="dot amber"></span>要確認 ${review}</span>
+    <span><span class="dot gray"></span>未検出 ${pending}</span>
+  `;
+  wrap.innerHTML = items.map(item=>{
+    const status = item.status || 'pending';
+    const dotClass = status==='matched' ? 'green' : status==='review' ? 'amber' : 'gray';
+    const cls = status==='matched' ? 'matched' : status==='review' ? 'review' : '';
+    let versionHtml = escapeHtml(item.version||'');
+    let foundHtml = '';
+    let confirmBtn = '';
+    if(status==='review' && item.foundText){
+      versionHtml = diffHighlight(item.version, item.foundText);
+      foundHtml = `<div class="item-found">検出値: ${escapeHtml(item.foundText)} ← 黄色部分を目視確認</div>`;
+      confirmBtn = `<span class="confirm-btn" data-id="${item.id}">確認OK</span>`;
+    }else if(status==='matched' && item.foundText){
+      foundHtml = `<div class="item-found">検出値: ${escapeHtml(item.foundText)}</div>`;
+    }
+    return `
+      <div class="item ${cls}">
+        <span class="dot ${dotClass}"></span>
+        <div class="item-body">
+          <div class="item-label">${escapeHtml(item.label)}</div>
+          <div class="item-version">${versionHtml}</div>
+          ${foundHtml}
+        </div>
+        ${confirmBtn}
+      </div>
+    `;
+  }).join('');
+}
+
+// ---------- init ----------
+loadItemsFromStorage();
+renderTable();
+renderChecklist();
+saveItems();
+</script>
+</body>
+</html>
