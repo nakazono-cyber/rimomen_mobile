@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KX8 施工照合ツール</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.1.0/tesseract.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  :root {
+    --bg:#0d1218; --panel:#151d26; --line:#2a3644; --text:#dde5ec; --sub:#8b98a5;
+    --ok:#2dd881; --ng:#ff5252; --warn:#ffb648; --accent:#4db8ff;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:var(--bg); color:var(--text);
+    font-family:"Hiragino Sans","Noto Sans JP",system-ui,sans-serif; font-size:14px; }
+  header { padding:14px 20px; border-bottom:1px solid var(--line);
+    display:flex; align-items:baseline; gap:12px; }
+  header h1 { font-size:16px; }
+  header .sub { color:var(--sub); font-size:12px; }
+  main { max-width:1100px; margin:0 auto; padding:16px 20px 60px; }
+
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+    padding:14px 16px; margin-bottom:14px; }
+  .panel h2 { font-size:13px; color:var(--accent); margin-bottom:10px; letter-spacing:0.05em; }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .hint { font-size:11px; color:var(--sub); margin-top:6px; line-height:1.6; }
+
+  button, .filebtn {
+    background:#1e2936; color:var(--text); border:1px solid var(--line);
+    border-radius:8px; padding:8px 14px; font-size:13px; cursor:pointer;
+    display:inline-flex; align-items:center; gap:6px;
+  }
+  button:hover, .filebtn:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); color:#03202f; border-color:transparent; font-weight:700; }
+  button:disabled { opacity:0.4; cursor:default; }
+  input[type=file] { display:none; }
+
+  textarea { width:100%; min-height:200px; background:#0a0f14; color:var(--text);
+    border:1px solid var(--line); border-radius:8px; padding:10px;
+    font:12px/1.7 ui-monospace,"SF Mono",Menlo,monospace; resize:vertical; }
+
+  .status { font-size:12px; color:var(--sub); }
+  .status b { color:var(--text); }
+
+  #progress { height:6px; background:#0a0f14; border-radius:3px; overflow:hidden; margin-top:10px; display:none; }
+  #progress .bar { height:100%; background:var(--accent); width:0%; transition:width 0.2s; }
+
+  table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  th, td { text-align:left; padding:7px 9px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--sub); font-weight:600; font-size:11px; }
+  td.mono { font-family:ui-monospace,Menlo,monospace; }
+  .badge { display:inline-block; padding:2px 9px; border-radius:10px; font-size:11px; font-weight:700; }
+  .badge.ok   { background:rgba(45,216,129,0.15); color:var(--ok); }
+  .badge.ng   { background:rgba(255,82,82,0.15);  color:var(--ng); }
+  .badge.warn { background:rgba(255,182,72,0.15); color:var(--warn); }
+  .badge.na   { background:rgba(139,152,165,0.15); color:var(--sub); }
+
+  select { background:#1e2936; color:var(--text); border:1px solid var(--line);
+    border-radius:6px; padding:4px 6px; font-size:12px; max-width:220px; }
+  a.plink { color:var(--accent); text-decoration:none; margin-right:8px; font-size:11px; }
+  .missing { color:var(--ng); font-family:ui-monospace,Menlo,monospace; font-size:12px; }
+  .foundnote { color:var(--sub); font-size:11px; }
+  .hidden { display:none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>KX8 施工照合ツール</h1>
+  <span class="sub">監視盤写真 × リリース管理票 × 設定チェックリスト</span>
+</header>
+<main>
+
+  <div class="panel">
+    <h2>① リリース管理票(版数の期待値)</h2>
+    <div class="row">
+      <label class="filebtn">📗 Excelを選択 (.xlsx)<input type="file" id="xlsxInput" accept=".xlsx,.xlsm"></label>
+      <span class="status" id="xlsxStatus">未読込</span>
+    </div>
+    <p class="hint">「リリース管理対象物件」「バージョン」ヘッダを自動検出して新旧版数を取り込みます。旧バージョン列があれば「旧版残り」も検出します。</p>
+  </div>
+
+  <div class="panel">
+    <h2>② 設定チェックリスト(加工指示図の期待値)</h2>
+    <textarea id="settingsInput" spellcheck="false"></textarea>
+    <p class="hint">書式: [画面タイトル] の行に続けて、期待値をカンマ区切りで記述。IPアドレス・ポート番号など特徴的な値だけ書くのがコツ(0や1桁の値は誤検出のもと)。同じ画面の複数ページ写真は自動で集約して照合します。編集内容はブラウザに保存されます。</p>
+    <div class="row" style="margin-top:8px">
+      <button id="saveSettings">チェックリスト保存</button>
+      <button id="resetSettings">初期値(池尻大橋)に戻す</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>③ 施工写真</h2>
+    <div class="row">
+      <label class="filebtn">🖼 写真を選択(複数可)<input type="file" id="photoInput" accept="image/*" multiple></label>
+      <span class="status" id="photoStatus">0枚</span>
+      <button class="primary" id="runBtn" disabled>照合実行</button>
+      <button id="csvBtn" class="hidden">CSV出力</button>
+    </div>
+    <div id="progress"><div class="bar"></div></div>
+    <p class="hint">元解像度の写真ほどOCR精度が上がります。縮小画像(1280px級)だと誤読が増えるため、要確認項目は必ず目視確認してください。</p>
+  </div>
+
+  <div class="panel hidden" id="verPanel">
+    <h2>版数照合結果</h2>
+    <table id="verTable">
+      <thead><tr><th>物件名</th><th>期待(新)</th><th>検出</th><th>状態</th><th>写真</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p class="hint" id="extraVers"></p>
+  </div>
+
+  <div class="panel hidden" id="setPanel">
+    <h2>設定照合結果(画面単位で集約)</h2>
+    <table id="setTable">
+      <thead><tr><th>画面</th><th>検出</th><th>未検出の期待値</th><th>写真</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <div class="panel hidden" id="photoPanel">
+    <h2>写真一覧(画面判定の手動修正)</h2>
+    <table id="photoTable">
+      <thead><tr><th>写真</th><th>OCRタイトル</th><th>画面割当</th><th>検出バージョン</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+</main>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+
+  // ============================================================
+  // 初期設定チェックリスト(池尻大橋・本屋口 / FA4039G-116,117,120,121,122より)
+  // ============================================================
+  const DEFAULT_SETTINGS = `[監視盤ネットワーク設定]
+10.154.101.31, 255.255.255.0
+
+[上位機器設定]
+10.154.101.101, 6100, 6200
+
+[上位機器設定ゲートウェイ設定]
+10.154.101.254
+
+[配信PC設定]
+10.154.101.101, 7100
+
+[ERPC2設定]
+90, 180, 300, 15
+
+[FEP設定]
+10.127.103.189, 10.154.101.254
+
+[中継サーバ設定]
+10.127.103.193, 6800
+
+[通過データ蓄積サーバ設定]
+10.127.103.151, 7100, 50, 10.154.101.254
+
+[異常出力設定]
+500, 100
+
+[駅都度設定]
+210-4, 88
+
+[定数設定]
+210-4, 6600, 9001, 9002, 9003, 180, 10.154.101.101, 10.127.102.135, 10.154.101.32, 10.154.101.30, 10.154.101.254, 255.255.255.0
+
+[改札機情報設定]
+10.154.101.33, 10.154.101.34, 10.154.101.35, 10.154.101.36, 10.154.101.37, 10.154.101.38, 10.154.101.39, 10.154.101.40, 10.154.101.41
+
+[対DLLサーバ通信設定]
+101, 32, 180, 60
+
+[DLL方式設定]
+号機別配信
+
+[IC保守設定パラメータ]
+12, 99, 30, 60, 16
+
+[ABT制御部設定]
+10.154.101.230, 8088, 10.154.101.227, 10.154.101.228, 10.154.101.229, 10.154.101.231, 10.154.101.232
+
+[ABT制御部通信設定]
+10.127.103.212, 10.127.103.210, 10.127.103.211
+
+[ABTボード設置情報編集]
+QR+EMV
+
+[ABT判定サーバパラメータ設定]
+17`;
+
+  // ============================================================
+  // 正規化・トークン処理
+  // ============================================================
+  const z2h = s => s.replace(/[０-９Ａ-Ｚａ-ｚ．－：／＋]/g,
+    c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0)).replace(/[〜～]/g,"~");
+
+  // 数字誤認マップ(数値・IP・版数の数字部にのみ適用)
+  const digitFix = s => s.replace(/O/g,"0").replace(/[IL|l]/g,"1").replace(/B/g,"8").replace(/Z/g,"2").replace(/S/g,"5").replace(/g/g,"9");
+
+  const VER_RE_STRICT = /SU[A-Z0-9]-\d{5}-\d{2}-[0-9A-Z]{1,4}/g;
+  // OCR寛容版(区切りスペース・誤認文字を許す)
+  const VER_RE_LOOSE = /S[UＵ][A-Z0-9]\s?[-‐−ー]\s?[0-9OIl|]{5}\s?[-‐−ー]\s?[0-9OIl|]{2}\s?[-‐−ー]\s?[0-9A-Za-z]{1,4}/g;
+
+  function canonVer(raw) {
+    let s = z2h(raw).toUpperCase().replace(/[\s‐−ー]/g, m => /[‐−ー]/.test(m) ? "-" : "");
+    const m = s.match(/^(S[U][A-Z0-9])-?([0-9OIL|]{5})-?([0-9OIL|]{2})-?([0-9A-Z]{1,4})$/);
+    if (!m) return null;
+    const h3 = m[1][2] === "B" ? "8" : m[1][2] === "O" ? "0" : m[1][2];
+    return `SU${h3}-${digitFix(m[2])}-${digitFix(m[3])}-${m[4].replace(/O/g,"0")}`;
+  }
+  function verPrefix(canon) { return canon ? canon.split("-").slice(0,3).join("-") : null; }
+
+  // ============================================================
+  // 状態
+  // ============================================================
+  let versions = [];       // {name, newVer, oldVer, newCanon, oldCanon}
+  let screens = [];        // {title, tokens[]}
+  let photos = [];         // {file, url, name, text, title, assigned, suFound[], hayText, hayDigit}
+  let worker = null;
+
+  // ============================================================
+  // ① Excel読込
+  // ============================================================
+  $("xlsxInput").addEventListener("change", async e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const wb = XLSX.read(await file.arrayBuffer());
+    versions = [];
+    for (const name of wb.SheetNames) {
+      const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header:1, defval:null });
+      let nameCol=-1, verCol=-1, oldCol=-1, headerRow=-1;
+      for (let r=0; r<rows.length; r++) {
+        const row = rows[r] || [];
+        let nc=-1, vc=-1, oc=-1;
+        for (let c=0; c<row.length; c++) {
+          const v = String(row[c] ?? "");
+          if (v.includes("リリース管理対象物件") || v.includes("対象物件")) nc=c;
+          if (v.trim() === "バージョン") vc=c;
+          if (v.includes("旧") && (v.includes("ジ") || v.includes("ｼﾞ"))) oc=c;
+        }
+        if (nc>=0 && vc>=0) { nameCol=nc; verCol=vc; oldCol=oc; headerRow=r; break; }
+      }
+      if (headerRow<0) continue;
+      for (let r=headerRow+1; r<rows.length; r++) {
+        const row = rows[r] || [];
+        const nm = row[nameCol];
+        const nv = String(row[verCol] ?? "").trim();
+        const ov = oldCol>=0 ? String(row[oldCol] ?? "").trim() : "";
+        VER_RE_STRICT.lastIndex = 0;
+        if (nm && VER_RE_STRICT.test(nv)) {
+          versions.push({ name:String(nm), newVer:nv, oldVer:ov,
+            newCanon:canonVer(nv), oldCanon:canonVer(ov) });
+        }
+      }
+      if (versions.length) break;
+    }
+    $("xlsxStatus").innerHTML = versions.length
+      ? `<b>${versions.length}項目</b>読込済(${file.name})`
+      : `⚠ 版数テーブルを検出できませんでした`;
+    updateRunnable();
+  });
+
+  // ============================================================
+  // ② 設定チェックリスト
+  // ============================================================
+  function loadSettings() {
+    $("settingsInput").value = localStorage.getItem("kx8chk_settings") ?? DEFAULT_SETTINGS;
+    parseSettings();
+  }
+  function parseSettings() {
+    screens = [];
+    let cur = null;
+    for (const line of $("settingsInput").value.split("\n")) {
+      const t = line.trim();
+      if (!t) continue;
+      const m = t.match(/^\[(.+)\]$/);
+      if (m) { cur = { title:m[1].trim(), tokens:[] }; screens.push(cur); }
+      else if (cur) cur.tokens.push(...t.split(",").map(s=>s.trim()).filter(Boolean));
+    }
+  }
+  $("saveSettings").addEventListener("click", () => {
+    localStorage.setItem("kx8chk_settings", $("settingsInput").value);
+    parseSettings();
+    $("saveSettings").textContent = "保存しました ✓";
+    setTimeout(()=> $("saveSettings").textContent = "チェックリスト保存", 1500);
+  });
+  $("resetSettings").addEventListener("click", () => {
+    $("settingsInput").value = DEFAULT_SETTINGS; parseSettings();
+  });
+
+  // ============================================================
+  // ③ 写真 + OCR
+  // ============================================================
+  $("photoInput").addEventListener("change", e => {
+    photos = [...e.target.files].map(f => ({
+      file:f, url:URL.createObjectURL(f), name:f.name,
+      text:"", title:"", assigned:"", suFound:[], hayText:"", hayDigit:"",
+    }));
+    $("photoStatus").innerHTML = `<b>${photos.length}枚</b>`;
+    updateRunnable();
+  });
+
+  function updateRunnable() {
+    $("runBtn").disabled = !(photos.length && (versions.length || screens.length));
+  }
+
+  async function preprocess(file) {
+    const bmp = await createImageBitmap(file);
+    const targetW = Math.max(bmp.width, 2200);           // 小さい画像はアップスケール
+    const scale = targetW / bmp.width;
+    const c = document.createElement("canvas");
+    c.width = Math.round(bmp.width*scale);
+    c.height = Math.round(bmp.height*scale);
+    const ctx = c.getContext("2d");
+    ctx.imageSmoothingQuality = "high";
+    ctx.filter = "grayscale(1) contrast(1.3)";
+    ctx.drawImage(bmp, 0, 0, c.width, c.height);
+    return c;
+  }
+
+  $("runBtn").addEventListener("click", async () => {
+    $("runBtn").disabled = true;
+    $("progress").style.display = "block";
+    parseSettings();
+
+    if (!worker) worker = await Tesseract.createWorker(["jpn","eng"]);
+
+    for (let i=0; i<photos.length; i++) {
+      const p = photos[i];
+      $("progress").querySelector(".bar").style.width = `${(i/photos.length)*100}%`;
+      $("photoStatus").innerHTML = `OCR中… <b>${i+1}/${photos.length}</b> ${p.name}`;
+      try {
+        const canvas = await preprocess(p.file);
+        const { data } = await worker.recognize(canvas);
+        p.text = z2h(data.text ?? "");
+      } catch { p.text = ""; }
+
+      // タイトル抽出 <...>
+      const tm = p.text.match(/[<＜〈]([^>＞〉\n]{2,25})[>＞〉]/);
+      p.title = tm ? tm[1].replace(/\s/g,"") : "";
+
+      // 版数トークン
+      p.suFound = [];
+      for (const m of p.text.matchAll(VER_RE_LOOSE)) {
+        const c = canonVer(m[0]);
+        if (c && !p.suFound.includes(c)) p.suFound.push(c);
+      }
+
+      // 照合用ヘイスタック
+      p.hayText = p.text.replace(/[\s]/g,"");
+      p.hayDigit = digitFix(p.hayText.toUpperCase());
+
+      // 画面割当(タイトル類似 + トークン出現)
+      p.assigned = assignScreen(p);
+    }
+    $("progress").querySelector(".bar").style.width = "100%";
+    $("photoStatus").innerHTML = `<b>${photos.length}枚</b> OCR完了`;
+    render();
+    $("runBtn").disabled = false;
+    $("csvBtn").classList.remove("hidden");
+  });
+
+  function bigrams(s) {
+    const set = new Set();
+    for (let i=0; i<s.length-1; i++) set.add(s.slice(i,i+2));
+    return set;
+  }
+  function sim(a, b) {
+    if (!a || !b) return 0;
+    const A = bigrams(a), B = bigrams(b);
+    let hit = 0;
+    for (const g of A) if (B.has(g)) hit++;
+    return hit / Math.max(A.size, B.size, 1);
+  }
+  function tokenHit(p, tok) {
+    const t = z2h(tok).replace(/\s/g,"");
+    if (/^[\d.\-:]+$/.test(t)) {
+      const td = digitFix(t.toUpperCase());
+      if (p.hayDigit.includes(td)) return true;
+      if (t.includes(".") && p.hayDigit.includes(td.replace(/\./g,""))) return true; // ドット欠落IP
+      return false;
+    }
+    return p.hayText.includes(t) || p.hayDigit.includes(t.toUpperCase());
+  }
+  function assignScreen(p) {
+    let best = "", bestScore = 0.28; // しきい値
+    for (const sc of screens) {
+      let score = sim(p.title, sc.title.replace(/\s/g,"")) * 2;
+      let hits = 0;
+      for (const tok of sc.tokens) if (tokenHit(p, tok)) hits++;
+      score += sc.tokens.length ? (hits/sc.tokens.length)*0.8 : 0;
+      if (score > bestScore) { bestScore = score; best = sc.title; }
+    }
+    return best;
+  }
+
+  // ============================================================
+  // 照合 & レンダリング
+  // ============================================================
+  let lastReport = null;
+
+  function verify() {
+    // --- 版数(全写真横断) ---
+    const verRows = versions.map(v => {
+      const hitPhotos = [], oldPhotos = [], nearPhotos = [];
+      for (const p of photos) {
+        for (const f of p.suFound) {
+          if (f === v.newCanon) hitPhotos.push({p, f});
+          else if (v.oldCanon && v.oldCanon !== v.newCanon && f === v.oldCanon) oldPhotos.push({p, f});
+          else if (verPrefix(f) === verPrefix(v.newCanon) && f !== v.newCanon) nearPhotos.push({p, f});
+        }
+      }
+      let status, cls, detected;
+      if (hitPhotos.length)      { status="一致";     cls="ok";   detected=v.newCanon; }
+      else if (oldPhotos.length) { status="旧版残り"; cls="ng";   detected=oldPhotos[0].f; }
+      else if (nearPhotos.length){ status="要確認";   cls="warn"; detected=nearPhotos[0].f; }
+      else                       { status="未確認";   cls="na";   detected="—"; }
+      return { v, status, cls, detected, photos:[...hitPhotos, ...oldPhotos, ...nearPhotos] };
+    });
+
+    // リスト外SU文字列
+    const known = new Set();
+    for (const v of versions) { known.add(v.newCanon); if (v.oldCanon) known.add(v.oldCanon); }
+    const prefixes = new Set(versions.map(v => verPrefix(v.newCanon)));
+    const extras = [];
+    for (const p of photos)
+      for (const f of p.suFound)
+        if (!known.has(f) && !prefixes.has(verPrefix(f))) extras.push({p, f});
+
+    // --- 設定(画面単位で集約) ---
+    const setRows = screens.map(sc => {
+      const ps = photos.filter(p => p.assigned === sc.title);
+      const missing = [], found = [];
+      for (const tok of sc.tokens) {
+        (ps.some(p => tokenHit(p, tok)) ? found : missing).push(tok);
+      }
+      let cls = ps.length === 0 ? "na" : missing.length === 0 ? "ok" : "warn";
+      return { sc, ps, found, missing, cls };
+    });
+
+    lastReport = { verRows, extras, setRows };
+    return lastReport;
+  }
+
+  function photoLinks(ps) {
+    const seen = new Set();
+    return ps.map(x => x.p ?? x).filter(p => !seen.has(p) && seen.add(p))
+      .map(p => `<a class="plink" href="${p.url}" target="_blank">${p.name}</a>`).join("");
+  }
+
+  function render() {
+    const { verRows, extras, setRows } = verify();
+
+    if (versions.length) {
+      $("verPanel").classList.remove("hidden");
+      $("verTable").querySelector("tbody").innerHTML = verRows.map(r => `
+        <tr>
+          <td>${r.v.name}</td>
+          <td class="mono">${r.v.newVer}</td>
+          <td class="mono">${r.detected}</td>
+          <td><span class="badge ${r.cls}">${r.status}</span></td>
+          <td>${photoLinks(r.photos)}</td>
+        </tr>`).join("");
+      $("extraVers").innerHTML = extras.length
+        ? `リスト外の版数検出: ` + extras.map(e =>
+            `<span class="mono">${e.f}</span>(<a class="plink" href="${e.p.url}" target="_blank">${e.p.name}</a>)`).join(" / ")
+        : "";
+    }
+
+    if (screens.length) {
+      $("setPanel").classList.remove("hidden");
+      $("setTable").querySelector("tbody").innerHTML = setRows.map(r => `
+        <tr>
+          <td>${r.sc.title}</td>
+          <td><span class="badge ${r.cls}">${r.ps.length ? `${r.found.length}/${r.sc.tokens.length}` : "写真なし"}</span></td>
+          <td>${r.missing.length ? `<span class="missing">${r.missing.join(", ")}</span>` : `<span class="foundnote">全て検出</span>`}</td>
+          <td>${photoLinks(r.ps)}</td>
+        </tr>`).join("");
+    }
+
+    // 写真一覧 + 手動割当
+    $("photoPanel").classList.remove("hidden");
+    const opts = t => `<option value="">(未割当)</option>` +
+      screens.map(s => `<option ${s.title===t?"selected":""}>${s.title}</option>`).join("");
+    $("photoTable").querySelector("tbody").innerHTML = photos.map((p, i) => `
+      <tr>
+        <td><a class="plink" href="${p.url}" target="_blank">${p.name}</a></td>
+        <td>${p.title || "<span class='foundnote'>検出できず</span>"}</td>
+        <td><select data-idx="${i}">${opts(p.assigned)}</select></td>
+        <td class="mono">${p.suFound.join("<br>") || "—"}</td>
+      </tr>`).join("");
+    $("photoTable").querySelectorAll("select").forEach(sel => {
+      sel.addEventListener("change", () => {
+        photos[+sel.dataset.idx].assigned = sel.value;
+        render();
+      });
+    });
+  }
+
+  // ============================================================
+  // CSV出力
+  // ============================================================
+  $("csvBtn").addEventListener("click", () => {
+    if (!lastReport) return;
+    const esc = s => `"${String(s).replace(/"/g,'""')}"`;
+    const lines = ["区分,項目,期待値,検出値,状態,写真"];
+    for (const r of lastReport.verRows)
+      lines.push(["版数", r.v.name, r.v.newVer, r.detected, r.status,
+        [...new Set(r.photos.map(x=>x.p.name))].join(" ")].map(esc).join(","));
+    for (const e of lastReport.extras)
+      lines.push(["版数", "(リスト外)", "", e.f, "リスト外", e.p.name].map(esc).join(","));
+    for (const r of lastReport.setRows)
+      lines.push(["設定", r.sc.title, r.sc.tokens.join(" "),
+        r.found.join(" "), r.ps.length ? (r.missing.length ? `未検出:${r.missing.join(" ")}` : "全て検出") : "写真なし",
+        r.ps.map(p=>p.name).join(" ")].map(esc).join(","));
+    const blob = new Blob(["\uFEFF" + lines.join("\r\n")], { type:"text/csv" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `KX8照合結果_${new Date().toISOString().slice(0,10)}.csv`;
+    a.click();
+  });
+
+  loadSettings();
+})();
+</script>
+</body>
+</html>
