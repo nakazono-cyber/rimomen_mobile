@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>KX8 AR版数チェッカー</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.1.0/tesseract.min.js"></script>
+<style>
+  :root {
+    --ok: #2dd881;
+    --ng: #ff5252;
+    --wait: #9aa5b1;
+    --bg: #0b0f14;
+    --panel: rgba(15, 22, 30, 0.92);
+    --line: rgba(255,255,255,0.12);
+    --text: #e8edf2;
+    --accent: #4db8ff;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html, body { height:100%; overflow:hidden; background:var(--bg); color:var(--text);
+    font-family: "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif; }
+
+  #stage { position:fixed; inset:0; }
+  #video { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
+  #overlay { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
+
+  /* ---------- top HUD ---------- */
+  #hud {
+    position:fixed; top:0; left:0; right:0;
+    padding: calc(env(safe-area-inset-top) + 8px) 12px 8px;
+    display:flex; align-items:center; gap:8px;
+    background: linear-gradient(to bottom, rgba(0,0,0,0.55), transparent);
+    z-index: 10;
+  }
+  #hud .title { font-size:13px; font-weight:700; letter-spacing:0.04em; }
+  #hud .status { font-size:11px; color:var(--wait); margin-left:auto; display:flex; align-items:center; gap:6px; }
+  #hud .dot { width:8px; height:8px; border-radius:50%; background:var(--wait); }
+  #hud .dot.scan { background:var(--accent); animation:pulse 1s infinite; }
+  @keyframes pulse { 50% { opacity:0.3; } }
+
+  /* ---------- score chips ---------- */
+  #chips {
+    position:fixed; top: calc(env(safe-area-inset-top) + 44px); left:12px;
+    display:flex; gap:6px; z-index:10;
+  }
+  .chip {
+    font-size:11px; font-weight:700; padding:4px 10px; border-radius:20px;
+    background:var(--panel); border:1px solid var(--line);
+  }
+  .chip b { font-size:13px; }
+  .chip.ok b { color:var(--ok); }
+  .chip.ng b { color:var(--ng); }
+
+  /* ---------- bottom controls ---------- */
+  #controls {
+    position:fixed; left:0; right:0;
+    bottom: calc(env(safe-area-inset-bottom) + 12px);
+    display:flex; justify-content:center; align-items:center; gap:14px;
+    z-index:10;
+  }
+  .btn {
+    height:52px; padding:0 18px; border-radius:26px;
+    background:var(--panel); border:1px solid var(--line); color:var(--text);
+    font-size:14px; font-weight:700; display:flex; align-items:center; gap:6px;
+  }
+  .btn:active { transform:scale(0.96); }
+  #freezeBtn.active { background:var(--accent); color:#03202f; border-color:transparent; }
+
+  /* ---------- checklist sheet ---------- */
+  #sheet {
+    position:fixed; left:0; right:0; bottom:0; z-index:20;
+    background:var(--panel); backdrop-filter: blur(12px);
+    border-radius:16px 16px 0 0; border-top:1px solid var(--line);
+    padding:16px 16px calc(env(safe-area-inset-bottom) + 16px);
+    transform: translateY(105%); transition: transform 0.25s ease;
+    max-height: 75vh; display:flex; flex-direction:column; gap:12px;
+  }
+  #sheet.open { transform: translateY(0); }
+  #sheet h2 { font-size:14px; }
+  #sheet p.hint { font-size:11px; color:var(--wait); line-height:1.5; }
+  #listInput {
+    width:100%; min-height:160px; resize:vertical;
+    background:rgba(0,0,0,0.35); color:var(--text);
+    border:1px solid var(--line); border-radius:10px;
+    padding:10px; font-size:14px; font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    line-height:1.6;
+  }
+  #sheet .row { display:flex; gap:10px; }
+  #sheet .row .btn { flex:1; justify-content:center; height:44px; }
+  #saveBtn { background:var(--accent); color:#03202f; border-color:transparent; }
+
+  #scrim { position:fixed; inset:0; background:rgba(0,0,0,0.4); z-index:15; display:none; }
+  #scrim.show { display:block; }
+
+  /* ---------- start screen ---------- */
+  #start {
+    position:fixed; inset:0; z-index:30; background:var(--bg);
+    display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px;
+    padding:24px; text-align:center;
+  }
+  #start h1 { font-size:20px; }
+  #start p { font-size:13px; color:var(--wait); line-height:1.7; max-width:320px; }
+  #startBtn {
+    height:56px; padding:0 32px; border-radius:28px; border:none;
+    background:var(--accent); color:#03202f; font-size:16px; font-weight:700;
+  }
+  #err { color:var(--ng); font-size:12px; white-space:pre-wrap; }
+  .hidden { display:none !important; }
+</style>
+</head>
+<body>
+
+<div id="stage">
+  <video id="video" autoplay playsinline muted></video>
+  <canvas id="overlay"></canvas>
+</div>
+
+<div id="hud">
+  <span class="title">KX8 AR版数チェック</span>
+  <span class="status"><span class="dot" id="scanDot"></span><span id="statusText">待機中</span></span>
+</div>
+
+<div id="chips">
+  <span class="chip ok">一致 <b id="okCount">0</b>/<b id="totalCount">0</b></span>
+  <span class="chip ng">不一致 <b id="ngCount">0</b></span>
+</div>
+
+<div id="controls">
+  <button class="btn" id="listBtn">📋 チェックリスト</button>
+  <button class="btn" id="freezeBtn">⏸ フリーズ</button>
+</div>
+
+<div id="scrim"></div>
+<div id="sheet">
+  <h2>チェックリスト(期待する版数)</h2>
+  <p class="hint">1行に1項目。「項目名 = 期待値」の形式か、期待値だけでもOK。<br>例: 改札機SW = V02.03 / 単に V02.03 でも可</p>
+  <textarea id="listInput" spellcheck="false"></textarea>
+  <div class="row">
+    <button class="btn" id="cancelBtn">キャンセル</button>
+    <button class="btn" id="saveBtn">保存</button>
+  </div>
+</div>
+
+<div id="start">
+  <h1>KX8 AR版数チェッカー</h1>
+  <p>カメラで監視盤の画面を映すと、認識した版数文字列の上に一致/不一致を直接表示します。ラベルはカメラの動きに追従します。</p>
+  <button id="startBtn">カメラを起動</button>
+  <p id="err"></p>
+</div>
+
+<script>
+(() => {
+  // ============================================================
+  // 設定
+  // ============================================================
+  const OCR_WIDTH = 1000;          // OCRに渡すフレーム幅
+  const TRACK_W = 128, TRACK_H = 72; // トラッキング用縮小フレーム
+  const SEARCH = 6;                // ブロックマッチング探索範囲(px, 縮小座標)
+  const ANCHOR_TTL = 10000;        // OCRで再確認されないアンカーの寿命(ms)
+  const MIN_CONF = 55;             // OCR信頼度しきい値
+  const VERSION_RE = /(\d+\.\d+)|([VvRr]\d)/; // 版数らしさ判定
+
+  const DEFAULT_LIST = [
+    "改札機SW = V02.03",
+    "監視盤FW = R1.10",
+  ].join("\n");
+
+  // ============================================================
+  // 状態
+  // ============================================================
+  let video, overlay, ctx;
+  let worker = null;
+  let running = false;
+  let frozen = false;
+  let frozenBitmap = null;
+
+  // カメラ移動の累積オフセット(video座標系)
+  let camOffset = { x: 0, y: 0 };
+  let prevGray = null;
+
+  // アンカー: { x,y,w,h (video座標), text, status, label, lastSeen }
+  let anchors = [];
+
+  // チェックリスト: { name, expect, norm }
+  let checklist = [];
+
+  // ============================================================
+  // ユーティリティ
+  // ============================================================
+  const $ = id => document.getElementById(id);
+
+  // 全角→半角 + 大文字化 + 空白除去
+  function normalize(s) {
+    return s
+      .replace(/[０-９Ａ-Ｚａ-ｚ．－]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+      .replace(/[\s　]/g, "")
+      .toUpperCase();
+  }
+
+  function loadChecklist() {
+    const raw = localStorage.getItem("kx8ar_list") ?? DEFAULT_LIST;
+    $("listInput").value = raw;
+    checklist = raw.split("\n").map(line => {
+      const t = line.trim();
+      if (!t) return null;
+      const m = t.split("=");
+      const name = m.length > 1 ? m[0].trim() : "";
+      const expect = (m.length > 1 ? m.slice(1).join("=") : t).trim();
+      return { name, expect, norm: normalize(expect) };
+    }).filter(Boolean);
+    updateChips();
+  }
+
+  function updateChips() {
+    const matchedNorms = new Set(anchors.filter(a => a.status === "ok").map(a => a.matchNorm));
+    $("okCount").textContent = matchedNorms.size;
+    $("totalCount").textContent = checklist.length;
+    $("ngCount").textContent = anchors.filter(a => a.status === "ng").length;
+  }
+
+  // ============================================================
+  // カメラ起動
+  // ============================================================
+  async function startCamera() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: "environment" },
+          width: { ideal: 1920 }, height: { ideal: 1080 },
+        },
+        audio: false,
+      });
+      video = $("video");
+      video.srcObject = stream;
+      await video.play();
+
+      $("start").classList.add("hidden");
+      overlay = $("overlay");
+      ctx = overlay.getContext("2d");
+      resizeOverlay();
+      window.addEventListener("resize", resizeOverlay);
+
+      running = true;
+      initWorker();
+      requestAnimationFrame(trackLoop);
+    } catch (e) {
+      $("err").textContent = "カメラを起動できません:\n" + e.message +
+        "\n(HTTPSでアクセスしているか、カメラ許可を確認)";
+    }
+  }
+
+  function resizeOverlay() {
+    overlay.width = overlay.clientWidth * devicePixelRatio;
+    overlay.height = overlay.clientHeight * devicePixelRatio;
+  }
+
+  // video座標 → 画面座標 (object-fit: cover の変換)
+  function videoToScreen(x, y) {
+    const vw = video.videoWidth, vh = video.videoHeight;
+    const cw = overlay.clientWidth, ch = overlay.clientHeight;
+    const scale = Math.max(cw / vw, ch / vh);
+    return {
+      x: (x * scale + (cw - vw * scale) / 2) * devicePixelRatio,
+      y: (y * scale + (ch - vh * scale) / 2) * devicePixelRatio,
+      s: scale * devicePixelRatio,
+    };
+  }
+
+  // ============================================================
+  // フレーム間トラッキング(ブロックマッチング)
+  // ============================================================
+  const trackCanvas = document.createElement("canvas");
+  trackCanvas.width = TRACK_W; trackCanvas.height = TRACK_H;
+  const trackCtx = trackCanvas.getContext("2d", { willReadFrequently: true });
+
+  function grabGray() {
+    trackCtx.drawImage(video, 0, 0, TRACK_W, TRACK_H);
+    const d = trackCtx.getImageData(0, 0, TRACK_W, TRACK_H).data;
+    const g = new Uint8Array(TRACK_W * TRACK_H);
+    for (let i = 0, j = 0; i < g.length; i++, j += 4) {
+      g[i] = (d[j] * 3 + d[j+1] * 6 + d[j+2]) / 10;
+    }
+    return g;
+  }
+
+  function estimateShift(prev, curr) {
+    const M = SEARCH + 2; // マージン
+    let best = Infinity, bx = 0, by = 0;
+    for (let dy = -SEARCH; dy <= SEARCH; dy++) {
+      for (let dx = -SEARCH; dx <= SEARCH; dx++) {
+        let sad = 0, n = 0;
+        for (let y = M; y < TRACK_H - M; y += 2) {
+          const rowC = y * TRACK_W, rowP = (y + dy) * TRACK_W;
+          for (let x = M; x < TRACK_W - M; x += 2) {
+            sad += Math.abs(curr[rowC + x] - prev[rowP + x + dx]);
+            n++;
+          }
+        }
+        sad /= n;
+        if (sad < best) { best = sad; bx = dx; by = dy; }
+      }
+    }
+    return { dx: bx, dy: by };
+  }
+
+  let lastTrack = 0;
+  function trackLoop(ts) {
+    if (!running) return;
+    requestAnimationFrame(trackLoop);
+    if (frozen) { render(); return; }
+
+    // ~30fpsに制限
+    if (ts - lastTrack > 30 && video.readyState >= 2) {
+      lastTrack = ts;
+      const g = grabGray();
+      if (prevGray) {
+        const { dx, dy } = estimateShift(prevGray, g);
+        // 縮小座標 → video座標に拡大(prevに対するcurrの位置なので符号反転)
+        const sx = video.videoWidth / TRACK_W;
+        const sy = video.videoHeight / TRACK_H;
+        camOffset.x -= dx * sx;
+        camOffset.y -= dy * sy;
+        for (const a of anchors) { a.x -= dx * sx; a.y -= dy * sy; }
+      }
+      prevGray = g;
+    }
+    render();
+  }
+
+  // ============================================================
+  // OCR
+  // ============================================================
+  const ocrCanvas = document.createElement("canvas");
+  const ocrCtx = ocrCanvas.getContext("2d", { willReadFrequently: true });
+
+  async function initWorker() {
+    $("statusText").textContent = "OCR準備中…";
+    worker = await Tesseract.createWorker("eng", 1);
+    await worker.setParameters({
+      tessedit_char_whitelist:
+        "0123456789.ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_/:()",
+    });
+    ocrLoop();
+  }
+
+  async function ocrLoop() {
+    while (running) {
+      if (frozen || video.readyState < 2) { await sleep(200); continue; }
+
+      const vw = video.videoWidth, vh = video.videoHeight;
+      const scale = OCR_WIDTH / vw;
+      ocrCanvas.width = OCR_WIDTH;
+      ocrCanvas.height = Math.round(vh * scale);
+      ocrCtx.drawImage(video, 0, 0, ocrCanvas.width, ocrCanvas.height);
+      const offsetAtCapture = { ...camOffset };
+
+      $("scanDot").classList.add("scan");
+      $("statusText").textContent = "認識中…";
+      let result;
+      try {
+        result = await worker.recognize(ocrCanvas);
+      } catch { continue; }
+      $("scanDot").classList.remove("scan");
+      $("statusText").textContent = "追跡中";
+
+      // キャプチャ後のカメラ移動分を補正
+      const corrX = camOffset.x - offsetAtCapture.x;
+      const corrY = camOffset.y - offsetAtCapture.y;
+
+      const words = [];
+      for (const block of result.data.blocks ?? []) {
+        for (const para of block.paragraphs ?? []) {
+          for (const line of para.lines ?? []) {
+            for (const w of line.words ?? []) {
+              if (w.confidence >= MIN_CONF) words.push(w);
+            }
+          }
+        }
+      }
+      // blocks API が無いビルド向けフォールバック
+      if (!words.length && result.data.words) {
+        for (const w of result.data.words) {
+          if (w.confidence >= MIN_CONF) words.push(w);
+        }
+      }
+
+      const now = performance.now();
+      const fresh = [];
+      for (const w of words) {
+        const norm = normalize(w.text);
+        if (norm.length < 2) continue;
+
+        // チェックリスト照合
+        let status = null, label = "", matchNorm = "";
+        for (const item of checklist) {
+          if (norm === item.norm || norm.includes(item.norm)) {
+            status = "ok"; matchNorm = item.norm;
+            label = item.name ? `${item.name} ✓` : "✓ 一致";
+            break;
+          }
+        }
+        if (!status) {
+          if (VERSION_RE.test(w.text)) { status = "ng"; label = "✗ リスト外"; }
+          else continue; // 版数っぽくない文字は無視
+        }
+
+        fresh.push({
+          x: w.bbox.x0 / scale + corrX,
+          y: w.bbox.y0 / scale + corrY,
+          w: (w.bbox.x1 - w.bbox.x0) / scale,
+          h: (w.bbox.y1 - w.bbox.y0) / scale,
+          text: w.text, status, label, matchNorm,
+          lastSeen: now,
+        });
+      }
+
+      // 既存アンカーと統合: 近い位置の同ステータスは更新、それ以外は追加
+      for (const f of fresh) {
+        const near = anchors.find(a =>
+          a.text === f.text &&
+          Math.hypot(a.x - f.x, a.y - f.y) < Math.max(f.w, 80));
+        if (near) Object.assign(near, f);
+        else anchors.push(f);
+      }
+      // 期限切れを削除
+      anchors = anchors.filter(a => now - a.lastSeen < ANCHOR_TTL);
+      updateChips();
+    }
+  }
+
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  // ============================================================
+  // 描画
+  // ============================================================
+  function render() {
+    ctx.clearRect(0, 0, overlay.width, overlay.height);
+    const now = performance.now();
+
+    for (const a of anchors) {
+      const age = now - a.lastSeen;
+      const alpha = age > ANCHOR_TTL - 2000 ? Math.max(0.15, 1 - (age - (ANCHOR_TTL - 2000)) / 2000) : 1;
+      const color = a.status === "ok" ? "#2dd881" : "#ff5252";
+
+      const p = videoToScreen(a.x, a.y);
+      const w = a.w * p.s / devicePixelRatio * devicePixelRatio;
+      const h = a.h * p.s / devicePixelRatio * devicePixelRatio;
+
+      ctx.globalAlpha = alpha;
+
+      // 枠(角括弧スタイル)
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2.5 * devicePixelRatio;
+      const c = Math.min(w, h) * 0.35;
+      ctx.beginPath();
+      // 左上
+      ctx.moveTo(p.x, p.y + c); ctx.lineTo(p.x, p.y); ctx.lineTo(p.x + c, p.y);
+      // 右上
+      ctx.moveTo(p.x + w - c, p.y); ctx.lineTo(p.x + w, p.y); ctx.lineTo(p.x + w, p.y + c);
+      // 右下
+      ctx.moveTo(p.x + w, p.y + h - c); ctx.lineTo(p.x + w, p.y + h); ctx.lineTo(p.x + w - c, p.y + h);
+      // 左下
+      ctx.moveTo(p.x + c, p.y + h); ctx.lineTo(p.x, p.y + h); ctx.lineTo(p.x, p.y + h - c);
+      ctx.stroke();
+
+      // ラベル
+      const fs = 13 * devicePixelRatio;
+      ctx.font = `700 ${fs}px system-ui, sans-serif`;
+      const txt = `${a.label}  ${a.text}`;
+      const tw = ctx.measureText(txt).width;
+      const pad = 6 * devicePixelRatio;
+      const ly = p.y - fs - pad * 1.6;
+      ctx.fillStyle = "rgba(10,14,20,0.85)";
+      roundRect(ctx, p.x, ly, tw + pad * 2, fs + pad * 1.2, 5 * devicePixelRatio);
+      ctx.fill();
+      ctx.fillStyle = color;
+      ctx.fillText(txt, p.x + pad, ly + fs + pad * 0.1 - 2);
+
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  function roundRect(c, x, y, w, h, r) {
+    c.beginPath();
+    c.moveTo(x + r, y);
+    c.arcTo(x + w, y, x + w, y + h, r);
+    c.arcTo(x + w, y + h, x, y + h, r);
+    c.arcTo(x, y + h, x, y, r);
+    c.arcTo(x, y, x + w, y, r);
+    c.closePath();
+  }
+
+  // ============================================================
+  // UI
+  // ============================================================
+  $("startBtn").addEventListener("click", startCamera);
+
+  $("freezeBtn").addEventListener("click", () => {
+    frozen = !frozen;
+    $("freezeBtn").classList.toggle("active", frozen);
+    if (frozen) { video.pause(); $("statusText").textContent = "フリーズ中"; }
+    else { video.play(); prevGray = null; $("statusText").textContent = "追跡中"; }
+  });
+
+  const openSheet = o => {
+    $("sheet").classList.toggle("open", o);
+    $("scrim").classList.toggle("show", o);
+  };
+  $("listBtn").addEventListener("click", () => openSheet(true));
+  $("cancelBtn").addEventListener("click", () => { loadChecklist(); openSheet(false); });
+  $("scrim").addEventListener("click", () => openSheet(false));
+  $("saveBtn").addEventListener("click", () => {
+    localStorage.setItem("kx8ar_list", $("listInput").value);
+    anchors = []; // 判定し直し
+    loadChecklist();
+    openSheet(false);
+  });
+
+  loadChecklist();
+})();
+</script>
+</body>
+</html>
