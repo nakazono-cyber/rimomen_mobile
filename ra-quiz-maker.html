@@ -104,6 +104,13 @@
   .footer-nav .btn-primary{ flex:1;}
   .qcounter{ font-size:12px; color:var(--sub); margin-bottom:2px;}
   .warn-box{ background:#fff4e5; border:1px solid #f0cf9a; border-radius:8px; padding:10px 12px; font-size:12px; color:#8a5a1f; margin-bottom:14px;}
+  .phase-columns{ display:flex; flex-direction:column; gap:16px; }
+  @media (min-width:900px){
+    .phase-columns{ display:grid; grid-template-columns:repeat(3,1fr); align-items:start; }
+    .phase-col{ min-width:0; }
+  }
+  .phase-col{ background:#fbfaf9; border:1px solid var(--line); border-radius:10px; padding:12px; }
+  .phase-col .phase-title{ margin-top:0; }
 </style>
 </head>
 <body>
@@ -330,8 +337,9 @@ function renderReview(){
     return;
   }
   let html = `<div class="warn-box">候補として表示される項目は過去の類似案件から抽出したものです。内容を必ず現場に合わせて確認・編集してください。チェックを入れた項目だけがExcelに出力されます。</div>`;
+  html += `<div class="phase-columns">`;
   activePhases.forEach(phase=>{
-    html += `<div class="phase-title">${phase}</div>`;
+    html += `<div class="phase-col"><div class="phase-title">${phase}</div>`;
     CATEGORIES.forEach(cat=>{
       const ans = state.answers[cat];
       if(!['yes','unknown'].includes(ans)) return;
@@ -343,7 +351,9 @@ function renderReview(){
       });
       html += `<button class="btn btn-ghost add-custom" onclick="addCustomItem('${key}')">＋ このカテゴリに項目を追加</button>`;
     });
+    html += `</div>`;
   });
+  html += `</div>`;
   html += `<div class="footer-nav">
       <button class="btn btn-ghost" onclick="state.screen='quiz'; state.qIndex=0; render();">質問をやり直す</button>
       <button class="btn btn-primary" onclick="generateExcel()">Excelを作成してダウンロード</button>
